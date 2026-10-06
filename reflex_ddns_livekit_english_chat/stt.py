@@ -15,7 +15,9 @@ grows as the words come. Only room participants (a valid token) may connect.
 
 The model (faster-whisper, ``WHISPER_MODEL``, default ``small.en``, about
 470 MB) is downloaded once into the app's data directory and loaded when the
-backend starts, so the very first start takes a minute or two.
+backend starts. The first start can take several minutes; meanwhile status
+messages carry the download's progress, and the subtitles of calls already
+open start by themselves once the model is ready.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import io
 import json
 import logging
 import os
@@ -33,6 +36,7 @@ from typing import Callable
 
 import numpy as np
 from starlette.routing import WebSocketRoute
+from tqdm import tqdm
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from reflex_ddns_livekit_english_chat import livekit_server
@@ -54,6 +58,43 @@ MAX_SEGMENT_S = 15.0  # longer speech is cut into segments anyway
 MIN_SPEECH_S = 0.25  # shorter sounds (a cough, a click) are dropped
 PARTIAL_EVERY_S = 1.0  # how often a growing segment is transcribed again
 IDLE_END_S = 1.0  # no audio for this long (muted, tab asleep) ends a segment
+# The files of a faster-whisper model (as faster_whisper.utils.download_model fetches them).
+_MODEL_FILES = ["config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*"]
+
+
+class _Quiet(io.TextIOBase):
+    def write(self, text: str) -> int:
+        return len(text)
+
+
+class _DownloadBar(tqdm):
+    """huggingface_hub's per-file progress bar, kept off the logs: it counts the bytes
+    downloaded so far (``n`` of ``total``), the progress shown while people wait.
+
+    Plain tqdm, not huggingface_hub's own subclass, which turns itself off without
+    a terminal (as in a server) and would count nothing.
+    """
+
+    bars: list["_DownloadBar"] = []
+
+    def __init__(self, *args, **kwargs) -> None:
+        kwargs["file"] = _Quiet()
+        super().__init__(*args, **kwargs)
+        self.received = 0
+        if self.unit == "B":
+            _DownloadBar.bars.append(self)
+
+    # With these, a Xet download reports to this one bar (instead of a second one for
+    # the network): ``update`` counts bytes written, ``update_transfer`` bytes received.
+    def update_transfer(self, n: int = 1) -> None:
+        self.received += n
+
+    def set_transfer_postfix_str(self, *args, **kwargs) -> None:
+        pass
+
+    @property
+    def done(self) -> int:
+        return max(self.n, self.received)
 
 
 class _Engine:
@@ -75,20 +116,44 @@ class _Engine:
             self._started = True
         threading.Thread(target=self._load, name="whisper-load", daemon=True).start()
 
+    def _fetch(self) -> str:
+        """The model's directory, downloaded on the first start (with progress)."""
+        import huggingface_hub
+        from faster_whisper.utils import _MODELS
+
+        repo = MODEL if "/" in MODEL else _MODELS.get(MODEL)
+        if not repo:
+            msg = f"unknown model (one of {', '.join(_MODELS)}, a Hugging Face repo or a directory)"
+            raise ValueError(msg)
+        files = {"repo_id": repo, "cache_dir": str(MODELS_DIR), "allow_patterns": _MODEL_FILES}
+        try:
+            return huggingface_hub.snapshot_download(**files, local_files_only=True)
+        except Exception:  # noqa: BLE001 - not downloaded yet
+            pass
+        _DownloadBar.bars = []
+        self.phase = "downloading"
+        logger.info("Downloading speech model %s into %s", MODEL, MODELS_DIR)
+        return huggingface_hub.snapshot_download(**files, tqdm_class=_DownloadBar)
+
+    def progress(self) -> str:
+        """How much of the model is downloaded (e.g. "230 / 464 MB"), while it downloads."""
+        if self.phase != "downloading":
+            return ""
+        bars = [bar for bar in _DownloadBar.bars if bar.total]
+        if not bars:
+            return ""
+        # Bars overlap (one for all the files, one per file, network and disk for the
+        # same bytes), and model.bin is almost the whole model: take the furthest of
+        # the big bars, and the biggest total.
+        total = max(bar.total for bar in bars)
+        done = max(min(bar.done, bar.total) / bar.total for bar in bars if bar.total >= total / 2) * total
+        return f"{done / 1e6:.0f} / {total / 1e6:.0f} MB"
+
     def _load(self) -> None:
         from faster_whisper import WhisperModel
-        from faster_whisper.utils import download_model
 
         try:
-            if os.path.isdir(MODEL):
-                path = MODEL
-            else:
-                try:
-                    path = download_model(MODEL, cache_dir=str(MODELS_DIR), local_files_only=True)
-                except Exception:  # noqa: BLE001 - not downloaded yet
-                    self.phase = "downloading"
-                    logger.info("Downloading speech model %s into %s", MODEL, MODELS_DIR)
-                    path = download_model(MODEL, cache_dir=str(MODELS_DIR))
+            path = MODEL if os.path.isdir(MODEL) else self._fetch()
             self.phase = "loading"
             self.model = WhisperModel(
                 path, device="cpu", compute_type="int8", cpu_threads=THREADS, num_workers=WORKERS
@@ -125,7 +190,7 @@ engine = _Engine()
 
 
 def status() -> dict[str, str]:
-    return {"phase": engine.phase, "message": engine.message, "model": MODEL}
+    return {"phase": engine.phase, "message": engine.message, "model": MODEL, "progress": engine.progress()}
 
 
 class _Speaker:
@@ -205,6 +270,8 @@ class _Session:
         self.context = ""
         self.last_audio = time.monotonic()
         self.phase_sent = ""
+        self.progress_sent = ""
+        self.status_at = 0.0
         self.wake = asyncio.Event()
         self.send_lock = asyncio.Lock()
 
@@ -224,9 +291,18 @@ class _Session:
             await self.ws.send_text(json.dumps(data))
 
     async def _send_status(self) -> None:
-        if engine.phase != self.phase_sent:
-            self.phase_sent = engine.phase
-            await self._send({"type": "status", "phase": engine.phase, "message": engine.message, "model": MODEL})
+        """Tell the browser when the model's phase changes, and how a download progresses
+        (at most every 2 s)."""
+        phase, now = engine.phase, time.monotonic()
+        if phase == self.phase_sent and (phase != "downloading" or now - self.status_at < 2):
+            return
+        progress = engine.progress()
+        if phase == self.phase_sent and progress == self.progress_sent:
+            return
+        self.phase_sent, self.progress_sent, self.status_at = phase, progress, now
+        await self._send(
+            {"type": "status", "phase": phase, "message": engine.message, "model": MODEL, "progress": progress}
+        )
 
     async def _receive(self) -> None:
         while True:

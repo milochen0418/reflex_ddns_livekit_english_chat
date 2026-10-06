@@ -19,6 +19,8 @@ class ServerStatusState(rx.State):
     stt_phase: str = "loading"
     stt_message: str = ""
     stt_model: str = ""
+    # While it downloads: e.g. "230 / 464 MB".
+    stt_progress: str = ""
 
     @rx.var
     def is_ready(self) -> bool:
@@ -35,11 +37,13 @@ class ServerStatusState(rx.State):
         self.stt_phase = speech["phase"]
         self.stt_message = speech["message"]
         self.stt_model = speech["model"]
+        self.stt_progress = speech["progress"]
 
     @rx.event(background=True)
     async def watch(self):
-        """Poll until the server and the speech model are up (the first start downloads both)."""
-        for _ in range(240):
+        """Poll until the server and the speech model are up (the first start downloads both,
+        which on a slow link takes a while)."""
+        for _ in range(900):
             info = await asyncio.to_thread(livekit_server.status)
             speech = stt.status()
             async with self:

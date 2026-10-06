@@ -79,7 +79,13 @@ def speech_status_pill() -> rx.Component:
         rx.match(
             ServerStatusState.stt_phase,
             ("ready", rx.el.span("Subtitles ready · Whisper ", ServerStatusState.stt_model)),
-            ("downloading", rx.el.span("Downloading the speech model (first start only)…")),
+            (
+                "downloading",
+                rx.el.span(
+                    "Downloading the speech model (first start only)… ",
+                    ServerStatusState.stt_progress,
+                ),
+            ),
             ("error", rx.el.span("Subtitles unavailable", title=ServerStatusState.stt_message)),
             rx.el.span("Loading the speech model…"),
         ),

@@ -41,7 +41,7 @@ Ben's browser
 - **Subtitles** (`stt.py`, `assets/subtitles.js`, `assets/subtitle_worklet.js`): the speaker's own browser sends its microphone (the same track it publishes to LiveKit, with echo cancellation and noise suppression) as 16 kHz PCM to `/stt`. The backend cuts it into segments at pauses (by loudness) and transcribes each with Whisper: again and again while it grows (*partial*), then once more carefully at the pause (*final*). The browser passes each result on to the room as a reliable LiveKit data packet: `{"v": 1, "seg": 12, "text": "How was your weekend?", "final": true}`, topic `subtitle`.
 - **Translation** (`translate.py`): `POST /translate` sends the selected words, their subtitle line and the target language to Ollama's chat API (temperature 0.1) and caches the answer.
 - **Access**: `/stt` and `/translate` accept only a valid room token of this app's LiveKit server, so only people in a room use the models.
-- **Speech model**: `WHISPER_MODEL` (default `small.en`, about 470 MB) is downloaded on the first start into the app's data directory and loaded at every backend start; the lobby shows *Downloading the speech model…* / *Loading…* / *Subtitles ready*. A 6-second sentence takes about 1 s on an Apple M4 Pro CPU (`int8`). Several people can speak at once (`WHISPER_WORKERS`).
+- **Speech model**: `WHISPER_MODEL` (default `small.en`, about 470 MB) is downloaded on the first start into the app's data directory and loaded at every backend start; the lobby shows *Downloading the speech model… 230 / 464 MB* / *Loading…* / *Subtitles ready*, and so does the subtitles header of calls opened in the meantime. Calls already open start their subtitles by themselves once the model is ready (words said before are not transcribed); nobody needs to rejoin. A 6-second sentence takes about 1 s on an Apple M4 Pro CPU (`int8`). Several people can speak at once (`WHISPER_WORKERS`).
 
 Signalling and media take the same path as in the other apps: `https://english-chat.reflex-ddns.com/rtc` is relayed by the Reflex backend to `livekit-server` on `127.0.0.1:7680`, and media goes to the published ports TCP 7681 / UDP 7682 on the host's LAN IP (`EXTERNAL_IP`). The ports sit below the avatar chat's (7780-7782); the audio and video apps use 7880-7882 and 7980-7982.
 
@@ -84,7 +84,7 @@ A catalog entry for `re_ddns/data/appstore_catalog.json`:
   "commit": "",
   "subdir": "",
   "env_file": "",
-  "volumes": [],
+  "volumes": ["smart-app-english-chat-data:/root/.local/share/reflex_ddns_livekit_english_chat"],
   "ports": ["7681:7681", "7682:7682/udp"],
   "env_schema": [
     {"key": "OLLAMA_MODEL", "label": "Ollama model for translations", "placeholder": "qwen2.5:7b", "secret": false, "required": false,
@@ -100,7 +100,7 @@ A catalog entry for `re_ddns/data/appstore_catalog.json`:
 1. Install **LiveKit English Chat (self-hosted)** from `https://aapps.reflex-ddns.com`.
 2. Open `https://english-chat.reflex-ddns.com`, pick a name, a room, an avatar and your language, allow camera and microphone, and share the invite link.
 
-The first start downloads `livekit-server` (about 17 MB) and the speech model (about 470 MB); later starts load the model in seconds. Each new container downloads the model again. To keep it (with the keys and the server binary), mount a host folder, e.g. `"volumes": ["/Users/Shared/english-chat:/data/english-chat"]`, and point `LIVEKIT_HOME` at it (`/data/english-chat`, e.g. through one more `env_schema` field).
+The first install downloads `livekit-server` (about 17 MB) and the speech model (about 470 MB; at Hugging Face's unauthenticated speed, about 1.5 MB/s, that takes around 5 minutes); later starts load the model in seconds. The app's data directory (model, keys, server binary) lives in the named Docker volume `smart-app-english-chat-data`, which outlives the container: re-installs and updates, in Dev mode too, reuse the model instead of downloading it again. `docker volume rm smart-app-english-chat-data` frees the space after an uninstall.
 
 From the command line:
 
@@ -204,7 +204,7 @@ The fake microphones speak English generated at test time by macOS `say` (or `es
 
 | Symptom | Fix |
 |---------|-----|
-| *Downloading the speech model…* stays for a while | The first start downloads about 470 MB from Hugging Face; later starts only load it. Without internet, put a model directory in place and set `WHISPER_MODEL` to it. |
+| *Downloading the speech model… x / 464 MB* (also in calls from relack or codoc) | The first install downloads about 470 MB from Hugging Face, a few minutes; later starts only load it. Calls already open start their subtitles by themselves when it is done, no rejoin needed. Without internet, put a model directory in place and set `WHISPER_MODEL` to it. |
 | My words don't become subtitles | Your browser must be allowed to process audio: click *Click to enable audio*, or anywhere on the page. Muted, nothing is transcribed. The line next to *Subtitles* says when the speech model is still loading or the connection to it is being restored. |
 | Subtitles get some words wrong | Speak a little slower, nearer the microphone, and pause between sentences. A larger model (`WHISPER_MODEL=medium.en`) understands accents better but needs more CPU. |
 | *Can't reach the translator (Ollama at …)* | Start Ollama. In Docker the app looks on the Docker host (`host.docker.internal`); if Ollama only listens on another machine, set `OLLAMA_URL`. On a Linux Docker host, start Ollama with `OLLAMA_HOST=0.0.0.0`. |

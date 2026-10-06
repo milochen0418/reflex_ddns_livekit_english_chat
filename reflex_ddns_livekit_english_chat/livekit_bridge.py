@@ -17,7 +17,7 @@ from reflex_ddns_livekit_english_chat.translate import DEFAULT_LANGUAGE, LANGUAG
 
 # Bump when assets/livekit_bridge.js, avatar_face.js, face_tracker.js,
 # subtitles.js or subtitle_worklet.js change so browsers drop the cached copies.
-_JS_VERSION = "en1"
+_JS_VERSION = "en2"
 # Hidden <input> the JS bridge writes room updates into.
 BRIDGE_INPUT_ID = "js_msg_input"
 # Avatars to choose from, in the order the "Change avatar" button cycles them

@@ -38,10 +38,13 @@
   const decoder = new TextDecoder();
 
   const STATUS_TEXT = {
-    downloading: 'Downloading the speech model (first start only)…',
+    downloading: 'Downloading the speech model…',
     loading: 'Loading the speech model…',
     offline: 'Subtitles reconnecting…',
   };
+  // Until the speech model is ready (the app's first start downloads it), the empty
+  // transcript says that the subtitles come by themselves: nobody needs to rejoin.
+  const WAITING = new Set(['downloading', 'loading']);
 
   function baseUrl(url, scheme) {
     const u = new URL(url, window.location.href);
@@ -131,7 +134,7 @@
       let msg;
       try { msg = JSON.parse(data); } catch (e) { return; }
       if (msg.type === 'status') {
-        this.setPhase(msg.phase === 'ready' ? '' : msg.phase, msg.message || '');
+        this.setPhase(msg.phase === 'ready' ? '' : msg.phase, msg.message || '', msg.progress || '');
         return;
       }
       const room = this.room;
@@ -195,13 +198,18 @@
       ws.send(buffer);
     },
 
-    setPhase(phase, message) {
+    setPhase(phase, message, progress) {
       this.phase = phase || '';
       this.message = message || '';
-      const text = this.phase === 'error' ? this.message : (STATUS_TEXT[this.phase] || '');
+      this.progress = progress || '';
+      let text = this.phase === 'error' ? this.message : (STATUS_TEXT[this.phase] || '');
+      if (this.phase === 'downloading' && this.progress) text += ' ' + this.progress;
       document.querySelectorAll('[data-subtitle-status]').forEach((el) => {
         if (el.textContent !== text) el.textContent = text;
       });
+      const waiting = WAITING.has(this.phase) ? '1' : '';
+      const log = document.getElementById('subtitle-log');
+      if (log && (log.dataset.waiting || '') !== waiting) log.dataset.waiting = waiting;
     },
 
     // --- everyone's subtitles ----------------------------------------------------------
@@ -295,7 +303,7 @@
         }
         if (span.textContent !== text && !selectionIn(span)) span.textContent = text;
       });
-      if (this.phase) this.setPhase(this.phase, this.message);
+      if (this.phase) this.setPhase(this.phase, this.message, this.progress);
     },
 
     // For tests: the transcript as {name, text, final}.
@@ -484,6 +492,8 @@
     '.participant-tile[data-local="1"][data-camera="on"] [data-subtitle-identity]{right:calc(24% + 16px)}',
     '#subtitle-log{user-select:text;-webkit-user-select:text}',
     '#subtitle-log:empty::before{content:"What people say appears here as they speak.";color:#9ca3af;font-size:13px}',
+    '#subtitle-log[data-waiting="1"]:empty::before{content:"Subtitles start by themselves as soon as the speech model is ready ',
+    '(the app downloads it once, on its first start). No need to leave or rejoin the call."}',
     '#subtitle-log .subtitle-line{margin:0 0 6px;font-size:15px;line-height:1.45;color:#111827}',
     '#subtitle-log .subtitle-who{font-weight:600;color:#6d28d9;margin-right:6px;user-select:none;-webkit-user-select:none}',
     '#subtitle-log .subtitle-partial .subtitle-said{color:#6b7280}',
