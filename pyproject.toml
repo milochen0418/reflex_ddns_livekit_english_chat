@@ -1,0 +1,27 @@
+[tool.poetry]
+name = "reflex-ddns-livekit-english-chat"
+version = "0.1.0"
+description = "Reflex English rooms: avatar calls with live subtitles (self-hosted Whisper) and right-click translation of any words (local LLM via Ollama). Self-hosted (embedded) open-source LiveKit server, for *.reflex-ddns.com"
+authors = ["Milo Chen"]
+license = "MIT"
+readme = "README.md"
+packages = [{include = "reflex_ddns_livekit_english_chat"}]
+
+[tool.poetry.dependencies]
+python = "~3.11"
+reflex = "0.8.24.post1"
+livekit-api = "^1.0"
+aiohttp = "^3.9"
+httpx = "*"
+python-dotenv = "^1.2.1"
+reflex-ddns-auth = {path = "../reflex_ddns_auth", develop = true}
+faster-whisper = "^1.1"
+numpy = ">=1.26,<2.4"
+opencc-python-reimplemented = "^0.1.7"
+
+[tool.poetry.group.dev.dependencies]
+playwright = "^1.42.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
